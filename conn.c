@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <endian.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/types.h>
@@ -44,7 +45,17 @@
 
 #include "conn.h"
 
+#define ALLOC(p,n) ((p)=malloc(sizeof(*(p))*(n)))
+#define STRCAT(p,s) ((p)=mystrcat((p),(s)))
+#define STRNULL(p,s) { (p)=(s); *(p)=0; }
+
 static pthread_mutex_t *locks;
+
+char *mystrcat(char* A,char* B){
+	while (*A) A++;
+	while ( (*A++ = *B++) );
+	return --A;
+}
 
 //---------------------------------------- Openssl Locks ------------------------------------
 #if defined(__GNUC__)
@@ -662,5 +673,44 @@ int tcp_tls_recv(SSL *ssl,int epollfd,int timeout,size_t ev_events_n,uint8_t *d,
 		}else cycle_continue=0;
 	}
 	*ret_err=0;
+	return 0;
+}
+
+//---------------------------------------- HTTP ---------------------------------------------
+int http_request(char *d,char *domain,char *path,char *ua,size_t *n){
+	STRNULL(p,d);
+	STRCAT(p,"GET ");
+	STRCAT(p,path);
+	STRCAT(p," HTTP/1.1\r\nHost: ");
+	STRCAT(p,domain);
+	STRCAT(p,"\r\nUser-Agent: ");
+	STRCAT(p,ua);
+	STRCAT(p,"\r\nContent-Length: 0\r\nAccept: */*\r\nConnection: Keep-Alive\r\n\r\n");
+	return 0;
+}
+
+int http_reply(char *d,size_t n){
+	size_t j;
+	char *p,*p1;
+	uint64_t dat;
+	dat=be64toh(*((uint64_t *)d));
+	if((dat&(~UINT64_C(0xFF)))==UINT64_C(0x485454502f322000)){ // HTTP/2
+		j=6;
+	}else if((dat==UINT64_C(0x485454502f312e31))|| // HTTP/1.1
+		(dat==UINT64_C(0x485454502f312e30))|| // HTTP/1.0
+		(dat==UINT64_C(0x485454502f302e39))){ // HTTP/0.9
+		j=8;
+	}else{
+		j=0;
+	}
+	if(j&&(be32toh(*((uint32_t *)(d+j)))>=UINT32_C(0x20323030))&&(be32toh(*((uint32_t *)(d+j)))<=UINT32_C(0x20323038))){ // 200-208 Success
+		p=d+j+4;
+	}else{
+		p=d;
+	}
+	p1=strstr(p,http_body_del);
+	if(p1) *p1=0;
+	lowcase(p);
+
 	return 0;
 }
